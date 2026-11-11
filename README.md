@@ -1,6 +1,6 @@
 # P&ID Migration Tool
 
-A Python desktop application for converting reviewed P&ID drawing data into Proteus 4.0.1 XML for testing in AVEVA P&ID.
+A Python desktop application for converting reviewed P&ID drawing data into Proteus 4.0.1 XML for testing in AVEVA Unified Engineering.
 
 The tool is designed to reduce manual migration work. It does **not** automatically turn every DWG or PDF into a fully intelligent P&ID: users review symbol classifications, tags, piping, and ownership before export.
 
