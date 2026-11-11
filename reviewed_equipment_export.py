@@ -74,6 +74,111 @@ def symbol_polyline(parent, points, layer):
     for x, y in points:
         symbol_sub(polyline, "Coordinate", **symbol_xyz(x, y))
 
+def add_shared_block_symbol(
+    catalogue, parent, registry, insert, doc,
+    tag, element_name, class_name, uri,
+):
+    """Write one shared definition and one placed engineering item."""
+    from shared_symbols import placed_paths, check_placed_insert
+
+    placement = registry.add(
+        insert, doc, element_name, class_name, uri
+    )
+    master = registry.definitions[placement.name]
+    check_placed_insert(
+    insert, placement, master["paths"]
+    )
+
+    local_paths = master["paths"]
+    world_paths = placed_paths(
+        local_paths,
+        placement.x,
+        placement.y,
+        placement.angle,
+        placement.sx,
+        placement.sy,
+    )
+
+    layer = (
+        "AS_INST"
+        if element_name == "ProcessInstrumentationFunction"
+        else "AS_EQU"
+        if element_name in {"Equipment", "Nozzle"}
+        else "AS_PIPE"
+    )
+
+    # Both ElementTree (base exporter) and lxml (later review stages)
+    # are used in this application.
+    def append(parent_node, item):
+        if isinstance(parent_node, etree._Element):
+            item = etree.fromstring(ET.tostring(item))
+        parent_node.append(item)
+        return item
+
+    if not any(
+        item.get("ComponentName") == placement.name
+        for item in catalogue
+    ):
+        definition = ET.Element(
+            element_name,
+            {
+                "ID": "CAT_" + placement.name,
+                "ComponentName": placement.name,
+                "ComponentClass": class_name,
+                "ComponentClassURI": uri,
+            },
+        )
+        local_points = [
+            point for path in local_paths for point in path
+        ]
+        symbol_extent(definition, local_points)
+        symbol_presentation(definition, layer)
+        symbol_position(definition, 0, 0)
+
+        for path in local_paths:
+            symbol_polyline(definition, path, layer)
+
+        append(catalogue, definition)
+
+    attributes = {
+        "ID": "INST_DXF_BLOCK_" + placement.handle,
+        "ComponentName": placement.name,
+        "ComponentClass": class_name,
+        "ComponentClassURI": uri,
+    }
+    if tag:
+        attributes["TagName"] = tag
+
+    instance = ET.Element(element_name, attributes)
+    world_points = [
+        point for path in world_paths for point in path
+    ]
+    symbol_extent(instance, world_points)
+
+    # Preserve the provisional Tag attribute supplied by the old
+    # add_symbol() path. Existing caller-specific attributes are
+    # added by their equipment/nozzle/instrument/component code.
+    if tag:
+        group = symbol_sub(
+            instance, "GenericAttributes",
+            Set=class_name, Number="1",
+        )
+        symbol_sub(
+            group, "GenericAttribute",
+            Name="Tag", Format="string", Value=tag,
+        )
+
+    symbol_presentation(instance, layer)
+    symbol_position(
+        instance, placement.x, placement.y, placement.angle
+    )
+    symbol_sub(
+        instance, "Scale",
+        **symbol_xyz(placement.sx, placement.sy, 1),
+    )
+
+    return append(parent, instance)
+
 
 def add_symbol(
     catalogue, parent, tag, component_class, uri,
@@ -334,7 +439,11 @@ def make_block_symbol(
     return definition, instance
 
 
-def generate_base_xml(dxf_file, blocks, approved_handles, output_file):
+def generate_base_xml(
+    dxf_file, blocks, approved_handles, output_file,
+    symbol_registry,
+):
+
     """Build base XML from approved blocks and actual DXF geometry."""
     doc = ezdxf.readfile(str(dxf_file))
     model = doc.modelspace()
@@ -384,21 +493,18 @@ def generate_base_xml(dxf_file, blocks, approved_handles, output_file):
                 f"Approved handle {handle} is not mapped as Equipment"
             )
 
-        paths = []
-        for virtual in insert.virtual_entities():
-            paths.extend(flatten_entity(virtual))
-        component_name = "DXF_BLOCK_" + handle
-        origin = (insert.dxf.insert.x, insert.dxf.insert.y)
-
-        if not add_symbol(
-            catalogue, root,
+        add_shared_block_symbol(
+            catalogue,
+            root,
+            symbol_registry,
+            insert,
+            doc,
             approved_handles[handle],
-            class_name, uri, component_name,
-            paths, origin, "Equipment",
-        ):
-            raise ValueError(
-                f"Approved block {handle} has no drawable DXF geometry"
-            )
+            "Equipment",
+            class_name,
+            uri,
+        )
+
         produced.add(handle)
 
     missing = set(approved_handles) - produced
@@ -528,7 +634,8 @@ def generate_base_xml(dxf_file, blocks, approved_handles, output_file):
     )
     
 def add_approved_nozzles(
-    root, source_doc, review_file, mapping_path, dxf_path
+    root, source_doc, review_file, mapping_path, dxf_path,
+    symbol_registry,
 ):
     """Add reviewed DXF block nozzles inside their approved equipment."""
     review_file = Path(review_file)
@@ -622,51 +729,24 @@ def add_approved_nozzles(
                     f"{block_name!r} to {insert.dxf.name!r}"
                 )
 
-            paths = []
-            for virtual in insert.virtual_entities():
-                paths.extend(flatten_entity(virtual))
-
-            component_name = "DXF_BLOCK_" + handle
-            temporary_catalogue = ET.Element("TemporaryCatalogue")
-            temporary_parent = ET.Element("TemporaryParent")
-            origin = (
-                insert.dxf.insert.x,
-                insert.dxf.insert.y,
+            instance = add_shared_block_symbol(
+                catalogue, owner, symbol_registry,
+                insert, source_doc,
+                nozzle_name, "Nozzle", class_name, uri,
             )
-
-            if not add_symbol(
-                temporary_catalogue,
-                temporary_parent,
-                nozzle_name, class_name, uri,
-                component_name, paths, origin, "Nozzle",
-            ):
-                raise ValueError(
-                    f"Nozzle {handle} has no drawable DXF geometry"
-                )
-
-            definition = etree.fromstring(
-                ET.tostring(temporary_catalogue[0])
-            )
-            instance = etree.fromstring(
-                ET.tostring(temporary_parent[0])
-            )
-
-
 
             etree.SubElement(
                 instance, "PersistentID",
                 Identifier=instance.get("ID"),
                 Context=dxf_path.stem,
             )
-
-            catalogue.append(definition)
-            owner.append(instance)
             count += 1
 
     return count
 
 def add_approved_instruments(
-    root, source_doc, instrument_rows, mapping_path, dxf_path
+    root, source_doc, instrument_rows, mapping_path, dxf_path,
+    symbol_registry,
 ):
     """Create reviewed instrument bubbles from placed DXF blocks."""
     if not instrument_rows:
@@ -742,39 +822,19 @@ def add_approved_instruments(
                 f"from DXF block {insert.dxf.name!r}"
             )
 
-        paths = []
-        for virtual in insert.virtual_entities():
-            paths.extend(flatten_entity(virtual))
-        if not paths:
-            raise ValueError(
-                f"{tag}: block {handle} has no drawable geometry"
-            )
-
-        component_name = "DXF_INSTRUMENT_" + handle
-        instance_id = "INST_" + component_name
-        catalogue_id = "CAT_" + component_name
-        if instance_id in existing_ids or catalogue_id in existing_ids:
+        instrument = add_shared_block_symbol(
+            catalogue, root, symbol_registry,
+            insert, source_doc,
+            tag, "ProcessInstrumentationFunction",
+            class_name, uri,
+        )
+        component_name = instrument.get("ComponentName")
+        instance_id = instrument.get("ID")
+        if instance_id in existing_ids:
             raise ValueError(f"Duplicate instrument XML ID: {handle}")
-        existing_ids.update((instance_id, catalogue_id))
-
-        temp_catalogue = ET.Element("TemporaryCatalogue")
-        temp_parent = ET.Element("TemporaryParent")
-        origin = (insert.dxf.insert.x, insert.dxf.insert.y)
-
-        if not add_symbol(
-            temp_catalogue, temp_parent,
-            tag, class_name, uri, component_name,
-            paths, origin, "ProcessInstrumentationFunction",
-        ):
-            raise ValueError(f"{tag}: symbol generation failed")
-
-        definition = etree.fromstring(
-            ET.tostring(temp_catalogue[0])
-        )
-        instrument = etree.fromstring(
-            ET.tostring(temp_parent[0])
-        )
+        existing_ids.add(instance_id)
         instrument.set("StockNumber", component_name)
+
 
         # add_symbol's provisional Tag group precedes Presentation.
         # Replace it with attributes in the reference's instance order.
@@ -910,8 +970,7 @@ def add_approved_instruments(
                 ),
             )
 
-        catalogue.append(definition)
-        root.append(instrument)
+        
 
     return len(instrument_rows)
 
@@ -1012,6 +1071,10 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
             encoding="utf-8",
         )
 
+        from shared_symbols import SymbolRegistry
+
+        symbol_registry = SymbolRegistry(tolerance=0.05)
+
         generate_base_xml(
             temporary_dxf,
             blocks,
@@ -1019,6 +1082,7 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
             work / (
                 temporary_dxf.stem + "_IMPORT_TEST_v2.xml"
             ),
+            symbol_registry,
         )
 
 
@@ -1028,6 +1092,10 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
         parser = etree.XMLParser(resolve_entities=False, no_network=True)
         tree = etree.parse(str(generated), parser)
         root = tree.getroot()
+        catalogue = root.find("ShapeCatalogue")
+        if catalogue is None:
+            raise ValueError("Generated XML has no ShapeCatalogue")
+
 
         # These are required by the supplied Proteus 4.0.1 XSD.
         information = root.find("PlantInformation")
@@ -1037,28 +1105,6 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
         information.set("Date", now.strftime("%Y-%m-%d"))
         information.set("Time", now.strftime("%H:%M:%S"))
 
-        # v2 classifies *all* inserts of an approved block name.
-        # Remove instances whose individual handles were not approved,
-        # including any unapproved nozzles.
-        for element in list(root):
-            if element.tag not in ("Equipment", "Nozzle"):
-                continue
-            component_name = element.get("ComponentName", "")
-            handle = component_name.removeprefix("DXF_BLOCK_").upper()
-            if handle not in handles or element.tag != "Equipment":
-                root.remove(element)
-
-        # Also remove catalogue definitions not used by retained instances.
-        used_names = {
-            element.get("ComponentName")
-            for element in root.findall("Equipment")
-        }
-        catalogue = root.find("ShapeCatalogue")
-        if catalogue is not None:
-            for element in list(catalogue):
-                if (element.get("ComponentName", "").startswith("DXF_BLOCK_")
-                        and element.get("ComponentName") not in used_names):
-                    catalogue.remove(element)
 
         found = {
             element.get("TagName")
@@ -1248,6 +1294,7 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
             review_path.parent / "nozzles_REVIEW.csv",
             mapping_path,
             dxf_path,
+            symbol_registry,
         )
         approved_instruments = add_approved_instruments(
             root,
@@ -1255,6 +1302,7 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
             instrument_rows,
             mapping_path,
             dxf_path,
+            symbol_registry,
         )
 
         from pipe_xml import add_approved_pipes
@@ -1270,6 +1318,7 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
             mapping_path=mapping_path,
             add_symbol=add_symbol,
             flatten_entity=flatten_entity,
+            symbol_registry=symbol_registry
         )
 
 

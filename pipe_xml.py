@@ -100,7 +100,7 @@ def vertices(entity):
 
 
 def add_approved_pipes(
-    root, dxf_path, review_path,
+    root, dxf_path, review_path, symbol_registry,
     component_review_path=None,
     mapping_path=None,
     add_symbol=None,
@@ -389,14 +389,16 @@ def add_approved_pipes(
             segments_by_line=segments_by_line,
             add_symbol=add_symbol,
             flatten_entity=flatten_entity,
+            symbol_registry=symbol_registry,
         )
 
     return len(rows)
 def add_approved_components(
     root, doc, dxf_path, review_path, mapping_path,
-    segments_by_line, add_symbol, flatten_entity,
+    segments_by_line, add_symbol, flatten_entity, symbol_registry,
 ):
-    """Export reviewed components; do not invent connections."""
+    """Export reviewed components without inventing connections."""
+    review_path = Path(review_path)
     if not review_path.is_file():
         return 0
     if add_symbol is None or flatten_entity is None:
@@ -404,21 +406,25 @@ def add_approved_components(
 
     import xml.etree.ElementTree as ET
     from openpyxl import load_workbook
+    from reviewed_equipment_export import add_shared_block_symbol
 
     book = load_workbook(
         mapping_path, read_only=True, data_only=True
     )
-    allowed = {
-        (
-            "".join(filter(str.isalnum, str(row[3] or "")))
-            .casefold(),
-            str(row[4] or "").strip(),
-        )
-        for row in book.active.iter_rows(
-            min_row=2, values_only=True
-        )
-        if len(row) >= 5 and row[3] and row[4]
-    }
+    try:
+        allowed = {
+            (
+                "".join(filter(str.isalnum, str(row[3] or "")))
+                .casefold(),
+                str(row[4] or "").strip(),
+            )
+            for row in book.active.iter_rows(
+                min_row=2, values_only=True
+            )
+            if len(row) >= 5 and row[3] and row[4]
+        }
+    finally:
+        book.close()
 
     with review_path.open(
         newline="", encoding="utf-8-sig"
@@ -484,16 +490,14 @@ def add_approved_components(
                 "not in mapping workbook"
             )
 
-        segment = segments_by_line.get(
-            (tag, owner_handle)
-        )
+        segment = segments_by_line.get((tag, owner_handle))
         if segment is None:
             raise ValueError(
                 f"Component row {row_number}: {tag} / "
                 f"{owner_handle} has no reviewed pipe segment"
             )
 
-        paths = []
+        entities = []
         for handle in raw_handles:
             if handle in used_geometry:
                 raise ValueError(
@@ -509,56 +513,79 @@ def add_approved_components(
                 raise ValueError(
                     f"Component DXF handle absent: {handle}"
                 )
+            entities.append(entity)
 
-            if entity.dxftype() == "INSERT":
-                for virtual in entity.virtual_entities():
-                    paths.extend(flatten_entity(virtual))
-            else:
-                paths.extend(flatten_entity(entity))
-            used_geometry.add(handle)
+        # Every approved single-block INSERT uses the same registry,
+        # regardless of its engineering class or block name.
+        if len(entities) == 1 and entities[0].dxftype() == "INSERT":
+            temporary_parent = etree.Element("TemporaryParent")
+            instance = add_shared_block_symbol(
+                catalogue,
+                temporary_parent,
+                symbol_registry,
+                entities[0],
+                doc,
+                label,
+                "PipingComponent",
+                class_name,
+                uri,
+            )
+        else:
+            # A collection of loose strokes is not one DXF block.
+            # Preserve the existing reviewed-geometry behaviour.
+            paths = []
+            for entity in entities:
+                if entity.dxftype() == "INSERT":
+                    for virtual in entity.virtual_entities():
+                        paths.extend(flatten_entity(virtual))
+                else:
+                    paths.extend(flatten_entity(entity))
 
-        paths = [
-            part for part in paths if len(part) >= 2
-        ]
-        if not paths:
-            raise ValueError(
-                f"Component row {row_number}: no supported "
-                "drawable DXF geometry"
+            paths = [
+                part for part in paths if len(part) >= 2
+            ]
+            if not paths:
+                raise ValueError(
+                    f"Component row {row_number}: no supported "
+                    "drawable DXF geometry"
+                )
+
+            points = [
+                point for part in paths for point in part
+            ]
+            origin = (
+                (min(x for x, y in points)
+                 + max(x for x, y in points)) / 2,
+                (min(y for x, y in points)
+                 + max(y for x, y in points)) / 2,
+            )
+            component_name = (
+                "DXF_PIPE_COMPONENT_" + "_".join(raw_handles)
             )
 
-        points = [
-            point for part in paths for point in part
-        ]
-        origin = (
-            (min(x for x, y in points)
-             + max(x for x, y in points)) / 2,
-            (min(y for x, y in points)
-             + max(y for x, y in points)) / 2,
-        )
-        component_name = (
-            "DXF_PIPE_COMPONENT_"
-            + "_".join(raw_handles)
-        )
+            temp_catalogue = ET.Element("TempCatalogue")
+            temp_parent = ET.Element("TempParent")
+            if not add_symbol(
+                temp_catalogue,
+                temp_parent,
+                label, class_name, uri,
+                component_name, paths, origin,
+                "PipingComponent",
+            ):
+                raise ValueError(
+                    f"Component row {row_number}: symbol failed"
+                )
 
-        temp_catalogue = ET.Element("TempCatalogue")
-        temp_parent = ET.Element("TempParent")
-        if not add_symbol(
-            temp_catalogue,
-            temp_parent,
-            label, class_name, uri,
-            component_name, paths, origin,
-            "PipingComponent",
-        ):
-            raise ValueError(
-                f"Component row {row_number}: symbol failed"
+            definition = etree.fromstring(
+                ET.tostring(temp_catalogue[0])
             )
+            instance = etree.fromstring(
+                ET.tostring(temp_parent[0])
+            )
+            catalogue.append(definition)
 
-        definition = etree.fromstring(
-            ET.tostring(temp_catalogue[0])
-        )
-        instance = etree.fromstring(
-            ET.tostring(temp_parent[0])
-        )
+        used_geometry.update(raw_handles)
+
         instance.set(
             "Specification",
             segment.get("Specification", ""),
@@ -595,7 +622,7 @@ def add_approved_components(
             ("Specification",
              segment.get("Specification", "")),
         ]
-        generic = etree.SubElement(
+        generic_group = etree.SubElement(
             instance, "GenericAttributes",
             Set=class_name,
             Number=str(len(attributes)),
@@ -609,7 +636,7 @@ def add_approved_components(
             if name == "Size" and value:
                 options["Units"] = "mm"
             etree.SubElement(
-                generic, "GenericAttribute", **options
+                generic_group, "GenericAttribute", **options
             )
 
         dexpi = etree.SubElement(
@@ -627,15 +654,11 @@ def add_approved_components(
                 Name=name, Format="string",
                 Value=value,
                 AttributeURI=(
-                    "http://sandbox.dexpi.org/rdl/"
-                    + name
+                    "http://sandbox.dexpi.org/rdl/" + name
                 ),
             )
 
-        catalogue.append(definition)
-
-        # Existing segment ends in NominalDiameter.
-        # Place component before that final diameter element.
+        # The existing segment ends in NominalDiameter.
         diameter = segment.find("NominalDiameter")
         if diameter is None:
             raise ValueError(

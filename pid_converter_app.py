@@ -14,6 +14,8 @@ import ezdwg
 from lxml import etree
 from openpyxl import load_workbook
 
+APP_FOLDER = Path(__file__).resolve().parent
+BUNDLED_XSD = APP_FOLDER / "ProteusSchema_4.0.1.xsd"
 
 def norm_handle(value):
     if isinstance(value, int):
@@ -280,8 +282,9 @@ def scan(inputs):
         "DWG entity types: "
         + repr(dict(Counter(dwg_by_handle.values()))),
         "",
-        "Next stages not implemented: symbol grouping, review UI,",
-"intelligent XML generation, and AVEVA import validation.",
+"Scan complete. Review the drawing items before exporting the XML.",
+"After export, import the XML into AVEVA and check it against the original drawing.",
+
 
         
     ]
@@ -376,7 +379,7 @@ class App(tk.Tk):
         ("DWG", "*.dwg"),
         ("Mapping workbook", "*.xlsx"),
         ("Tag workbook", "*.xlsx"),
-        ("Proteus XSD", "*.xsd"),
+        
     )
 
     def __init__(self):
@@ -418,26 +421,23 @@ class App(tk.Tk):
         panel.rowconfigure(7, weight=1)
         ttk.Button(
             panel,
-            text="Generate XSD-validated equipment XML",
+            text="Generate XML",
             command=self.run_export,
-        ).grid(row=8, column=0, columnspan=3, pady=8)
+        ).grid(row=8, column=0, sticky="w", pady=8)
         ttk.Button(
             panel, text="Review placed equipment",
             command=self.open_review,
-        ).grid(row=9, column=0, columnspan=2, pady=5)
+        ).grid(row=9, column=0, sticky="w", pady=5)
 
         ttk.Button(
             panel, text="Open existing scan folder",
             command=self.open_existing_run,
-        ).grid(row=9, column=2, pady=5)
-        ttk.Button(
-            panel, text="Review fragmented equipment",
-            command=self.review_fragments,
-        ).grid(row=10, column=0, columnspan=3, pady=5)
+        ).grid(row=9, column=2, sticky="e", pady=5)
+
         ttk.Button(
             panel, text="Review pipe linework",
             command=self.open_pipe_review,
-        ).grid(row=11, column=0, columnspan=3, pady=5)
+        ).grid(row=10, column=0, sticky="w", pady=5)
 
 
     def run_scan(self):
@@ -446,6 +446,7 @@ class App(tk.Tk):
                 name: var.get().strip()
                 for name, var in self.fields.items()
             }
+            inputs["Proteus XSD"] = str(BUNDLED_XSD)
             folder, report = scan(inputs)
             self.latest_folder = folder
             self.output.delete("1.0", "end")
@@ -1513,6 +1514,8 @@ class App(tk.Tk):
                 name: variable.get().strip()
                 for name, variable in self.fields.items()
             }
+            inputs["Proteus XSD"] = str(BUNDLED_XSD)
+
 
             path, count = export(
                 inputs["DXF"],
