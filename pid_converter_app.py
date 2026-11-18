@@ -16,6 +16,7 @@ from openpyxl import load_workbook
 
 APP_FOLDER = Path(__file__).resolve().parent
 BUNDLED_XSD = APP_FOLDER / "ProteusSchema_4.0.1.xsd"
+BUNDLED_ATTRS = APP_FOLDER / "PID Attributes.xlsx"
 
 def norm_handle(value):
     if isinstance(value, int):
@@ -1517,15 +1518,24 @@ class App(tk.Tk):
             inputs["Proteus XSD"] = str(BUNDLED_XSD)
 
 
-            path, count = export(
+            path, count, attr_warnings = export(
                 inputs["DXF"],
                 self.latest_folder / "placed_symbols_REVIEW.csv",
                 inputs["Mapping workbook"],
                 inputs["Proteus XSD"],
                 output,
+                BUNDLED_ATTRS,
             )
+            # attr_warnings are printed to console by export — 
+            # surface them in the app if needed            
+            if attr_warnings:
+                self.output.insert(
+                    "end",
+                    "\n\nDuplicate attributes skipped:\n" + "\n".join(attr_warnings),
+                )
             messagebox.showinfo(
                 "XSD validation passed",
+
                 f"Generated {count} approved equipment item(s).\n"
                 f"XML: {path}\n\nAVEVA import still needs testing.",
             )

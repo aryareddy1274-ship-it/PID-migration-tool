@@ -572,34 +572,6 @@ def generate_base_xml(
         if provisional is not None:
             equipment.remove(provisional)
 
-        attributes = symbol_sub(
-            equipment, "GenericAttributes",
-            Set=equipment.get("ComponentClass"), Number="4",
-        )
-        for name, value in (
-            ("Number", number),
-            ("TagType", prefix),
-            ("TagSequenceNo", number),
-            ("SymbolName", component_name),
-        ):
-            symbol_sub(
-                attributes, "GenericAttribute",
-                Name=name, Format="string", Value=value,
-            )
-
-        dexpi = symbol_sub(
-            equipment, "GenericAttributes",
-            Set="DexpiAttributes", Number="2",
-        )
-        for name, value in (
-            ("TagNameSequenceNumberAssignmentClass", number),
-            ("TagNamePrefixAssignmentClass", prefix),
-        ):
-            symbol_sub(
-                dexpi, "GenericAttribute",
-                Name=name, Format="string", Value=value,
-                AttributeURI="http://sandbox.dexpi.org/rdl/" + name,
-            )
 
         symbol_sub(
             equipment, "PersistentID",
@@ -635,9 +607,9 @@ def generate_base_xml(
     
 def add_approved_nozzles(
     root, source_doc, review_file, mapping_path, dxf_path,
-    symbol_registry,
+    symbol_registry, attr_defs,
 ):
-    """Add reviewed DXF block nozzles inside their approved equipment."""
+    from attribute_writer import write_attributes
     review_file = Path(review_file)
     if not review_file.is_file():
         return 0
@@ -740,13 +712,17 @@ def add_approved_nozzles(
                 Identifier=instance.get("ID"),
                 Context=dxf_path.stem,
             )
+            nozzle_values = {"nozzle_name": nozzle_name}
+            write_attributes(instance, "Nozzle", "Nozzle",
+                             nozzle_values, attr_defs)
+            
             count += 1
 
     return count
 
 def add_approved_instruments(
     root, source_doc, instrument_rows, mapping_path, dxf_path,
-    symbol_registry,
+    symbol_registry, attr_defs,
 ):
     """Create reviewed instrument bubbles from placed DXF blocks."""
     if not instrument_rows:
@@ -849,42 +825,18 @@ def add_approved_instruments(
         )
 
         match = re.fullmatch(r"([A-Za-z]+)-(.+)", tag)
-        attributes = [("Symbol_Name", component_name)]
-        if match:
-            prefix, number = match.groups()
-            attributes.extend((
-                ("Number", number),
-                ("TagType", prefix),
-                ("Type",prefix),
-                ("TagSequenceNo", number),
-            ))
-
-        generic = etree.SubElement(
-            instrument, "GenericAttributes",
-            Set="ProcessInstrumentationFunction",
-            Number=str(len(attributes)),
+        prefix, number = match.groups() if match else ("", "")
+        from attribute_writer import write_attributes
+        inst_values = {
+            "_component_name": component_name,
+            "Number": number,
+            "TagType": prefix,
+        }
+        write_attributes(
+            instrument, "ProcessInstrumentationFunction",
+            "ProcessInstrumentationFunction", inst_values, attr_defs,
         )
-        for name, value in attributes:
-            etree.SubElement(
-                generic, "GenericAttribute",
-                Name=name, Format="string", Value=value,
-            )
 
-        if match:
-            dexpi = etree.SubElement(
-                instrument, "GenericAttributes",
-                Set="DexpiAttributes", Number="1",
-            )
-            etree.SubElement(
-                dexpi, "GenericAttribute",
-                Name="ProcessInstrumentationFunctionNumberAssignmentClass",
-                Format="string",
-                Value=number,
-                AttributeURI=(
-                    "http://sandbox.dexpi.org/rdl/"
-                    "ProcessInstrumentationFunctionNumberAssignmentClass"
-                ),
-            )
 
         # Associate only an exact source text match. Split labels
         # require a separate review; do not invent their positions.
@@ -933,20 +885,12 @@ def add_approved_instruments(
                     Identifier=loop_id,
                     Context=dxf_path.stem,
                 )
-                loop_attrs = etree.SubElement(
-                    loop, "GenericAttributes",
-                    Set="DexpiAttributes", Number="1",
+                loop_values = {"Number": loop_number}
+                write_attributes(
+                    loop, "InstrumentationLoopFunction",
+                    "InstrumentationLoopFunction", loop_values, attr_defs,
                 )
-                etree.SubElement(
-                    loop_attrs, "GenericAttribute",
-                    Name="InstrumentationLoopFunctionNumberAssignmentClass",
-                    Format="string",
-                    Value=loop_number,
-                    AttributeURI=(
-                        "http://sandbox.dexpi.org/rdl/"
-                        "InstrumentationLoopFunctionNumberAssignmentClass"
-                    ),
-                )
+
                 loops_by_tag[loop_tag] = loop
                 root.append(loop)
 
@@ -974,7 +918,7 @@ def add_approved_instruments(
 
     return len(instrument_rows)
 
-def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
+def export(dxf_path, review_path, mapping_path, xsd_path, output_path, attr_workbook_path):
     dxf_path = Path(dxf_path)
     review_path = Path(review_path)
     mapping_path = Path(mapping_path)
@@ -984,6 +928,9 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
     for path in (dxf_path, review_path, mapping_path, xsd_path):
         if not path.is_file():
             raise FileNotFoundError(path)
+    from attribute_writer import load_definitions, write_attributes
+    attr_defs, attr_warnings = load_definitions(attr_workbook_path)
+
     if output_path.exists():
         raise FileExistsError(
             f"Output already exists; it will not be overwritten: {output_path}"
@@ -1208,34 +1155,14 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
             if provisional is not None:
                 equipment.remove(provisional)
 
-            attrs = etree.SubElement(
-                equipment, "GenericAttributes",
-                Set=class_name, Number="5",
-            )
-            for name, value in (
-                ("Number", number),
-                ("TagType", prefix),
-                ("Type", prefix),
-                ("TagSequenceNo", number),
-                ("SymbolName", component_name),
-            ):
-                etree.SubElement(
-                    attrs, "GenericAttribute",
-                    Name=name, Format="string", Value=value,
-                )
-            dexpi = etree.SubElement(
-                equipment, "GenericAttributes",
-                Set="DexpiAttributes", Number="2",
-            )
-            for name, value in (
-                ("TagNameSequenceNumberAssignmentClass", number),
-                ("TagNamePrefixAssignmentClass", prefix),
-            ):
-                etree.SubElement(
-                    dexpi, "GenericAttribute",
-                    Name=name, Format="string", Value=value,
-                    AttributeURI="http://sandbox.dexpi.org/rdl/" + name,
-                )
+            frag_values = {
+                "Number": number,
+                "TagType": prefix,
+                "_component_name": component_name,
+            }
+            write_attributes(equipment, "Equipment", class_name,
+                             frag_values, attr_defs)
+
             etree.SubElement(
                 equipment, "PersistentID",
                 Identifier=equipment.get("ID"),
@@ -1288,13 +1215,29 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
                             "Number",
                             str(len(group.findall("GenericAttribute"))),
                         )
+        for equipment in root.findall("Equipment"):
+            tag = equipment.get("TagName", "")
+            match = re.fullmatch(r"([A-Za-z]+)([0-9]+)", tag)
+            if not match:
+                continue
+            prefix, number = match.groups()
+            component_name = equipment.get("ComponentName", "")
+            class_name = equipment.get("ComponentClass", "Equipment")
+            equip_values = {
+                "Number": number,
+                "TagType": prefix,
+                "_component_name": component_name,
+            }
+            write_attributes(equipment, "Equipment", class_name,
+                             equip_values, attr_defs)
+
         approved_nozzles = add_approved_nozzles(
             root,
             source_doc,
             review_path.parent / "nozzles_REVIEW.csv",
             mapping_path,
             dxf_path,
-            symbol_registry,
+            symbol_registry, attr_defs,
         )
         approved_instruments = add_approved_instruments(
             root,
@@ -1302,7 +1245,7 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
             instrument_rows,
             mapping_path,
             dxf_path,
-            symbol_registry,
+            symbol_registry, attr_defs,
         )
 
         from pipe_xml import add_approved_pipes
@@ -1311,6 +1254,7 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
             root,
             temporary_dxf,
             review_path.parent / "pipes_REVIEW.csv",
+            attr_defs,
             component_review_path=(
                 review_path.parent
                 / "pipe_components_REVIEW.csv"
@@ -1340,7 +1284,7 @@ def export(dxf_path, review_path, mapping_path, xsd_path, output_path):
             pretty_print=True,
         )
 
-    return output_path, len(handles) + len(fragments) + approved_instruments
+    return output_path, len(handles) + len(fragments) + approved_instruments, attr_warnings
 
 
 if __name__ == "__main__":

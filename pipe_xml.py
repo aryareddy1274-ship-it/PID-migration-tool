@@ -39,38 +39,6 @@ def presentation(parent):
     )
 
 
-def generic(parent, set_name, pairs):
-    group = etree.SubElement(
-        parent, "GenericAttributes",
-        Set=set_name, Number=str(len(pairs)),
-    )
-    for entry in pairs:
-        name, value = entry[:2]
-        attributes = {
-            "Name": name,
-            "Format": "string",
-            "Value": str(value),
-        }
-        if len(entry) == 3:
-            attributes["Units"] = entry[2]
-        etree.SubElement(
-            group, "GenericAttribute", **attributes
-        )
-
-
-def dexpi_attributes(parent, pairs):
-    group = etree.SubElement(
-        parent, "GenericAttributes",
-        Set="DexpiAttributes", Number=str(len(pairs)),
-    )
-    for name, value in pairs:
-        etree.SubElement(
-            group, "GenericAttribute",
-            Name=name, Format="string", Value=str(value),
-            AttributeURI="http://sandbox.dexpi.org/rdl/" + name,
-        )
-
-
 def vertices(entity):
     kind = entity.dxftype()
     if kind == "LINE":
@@ -100,7 +68,7 @@ def vertices(entity):
 
 
 def add_approved_pipes(
-    root, dxf_path, review_path, symbol_registry,
+    root, dxf_path, review_path, attr_defs, symbol_registry,
     component_review_path=None,
     mapping_path=None,
     add_symbol=None,
@@ -183,6 +151,19 @@ def add_approved_pipes(
             )
         fluid, number = match.groups()
 
+        insulation_type = row.get("InsulationType", "").strip()
+        insulation_thickness = row.get("InsulationThickness_mm", "").strip()
+
+        network_values = {
+            "Fluid": fluid,
+            "Number": number,
+            "Bore_mm": bore,
+            "Specification": specification,
+            "InsulationType+InsulationThickness_mm": (
+                insulation_type + insulation_thickness
+                if insulation_type else ""
+            ),
+        }        
         if tag not in systems:
             system_id = f"REVIEW_PIPE_SYSTEM_{len(systems) + 1}"
             if system_id in existing_ids:
@@ -203,23 +184,10 @@ def add_approved_pipes(
                 Identifier=system_id,
                 Context=Path(dxf_path).stem,
             )
-            generic(
-                system, "PipingNetworkSystem",
-                [
-                    ("Fluid", fluid),
-                    ("Number", number),
-                    ("Specification", specification),
-                ],
-            )
-            dexpi_attributes(
-                system,
-                [
-                    ("LineNumberAssignmentClass", number),
-                    ("PipingClassCodeAssignmentClass",
-                     specification),
-                    ("FluidCodeAssignmentClass", fluid),
-                ],
-            )
+            from attribute_writer import write_attributes
+
+            write_attributes(system, "PipingNetworkSystem", "PipingNetworkSystem",
+                             network_values, attr_defs)
 
             
 
@@ -227,12 +195,14 @@ def add_approved_pipes(
             insert_at += 1
             systems[tag] = {
                 "element": system,
+                "system_id": system_id,
                 "specification": specification,
                 "points": [],
                 "bores": set(),
             }
 
         saved = systems[tag]
+        system_id = saved["system_id"]
         if saved["specification"] != specification:
             raise ValueError(
                 f"{tag}: conflicting specifications in review rows"
@@ -286,40 +256,21 @@ def add_approved_pipes(
                 ("Size", bore, "mm"),
                 ("Specification", specification),
             ]
-            insulation_type = row.get(
-                "InsulationType", ""
-            ).strip()
-            insulation_thickness = row.get(
-                "InsulationThickness_mm", ""
-            ).strip()
+
             if insulation_type:
                 segment_pairs.append(
                     ("Insulation_Table",
                      insulation_type + insulation_thickness)
                 )
 
-            generic(
-                segment, "PipingNetworkSegment",
-                segment_pairs,
-            )
-            segment_dexpi = [
-                ("SegmentNumberAssignmentClass",
-                 f"S{sequence}"),
-                (
-                    "NominalDiameterNumericalValueRepresentation"
-                    "AssignmentClass",
-                    bore,
-                ),
-                ("PipingClassCodeAssignmentClass",
-                 specification),
-                ("FluidCodeAssignmentClass", fluid),
-            ]
-            if insulation_type:
-                segment_dexpi.append(
-                    ("InsulationTypeAssignmentClass",
-                     insulation_type)
-                )
-            dexpi_attributes(segment, segment_dexpi)
+            segment_values = {
+                **network_values,
+                "_system_id": system_id,
+                "_segment_id": segment_id,
+                "_segment_number": f"S{sequence}",
+            }
+            write_attributes(segment, "PipingNetworkSegment", "PipingNetworkSegment",
+                             segment_values, attr_defs)
 
 
             centerline = etree.SubElement(
@@ -390,14 +341,16 @@ def add_approved_pipes(
             add_symbol=add_symbol,
             flatten_entity=flatten_entity,
             symbol_registry=symbol_registry,
+            attr_defs=attr_defs,
         )
 
     return len(rows)
 def add_approved_components(
     root, doc, dxf_path, review_path, mapping_path,
-    segments_by_line, add_symbol, flatten_entity, symbol_registry,
+    segments_by_line, add_symbol, flatten_entity, symbol_registry, attr_defs, 
 ):
-    """Export reviewed components without inventing connections."""
+    from attribute_writer import write_attributes
+    
     review_path = Path(review_path)
     if not review_path.is_file():
         return 0
@@ -616,47 +569,16 @@ def add_approved_components(
                 )
             }
 
-        attributes = [
-            ("Fluid", values.get("Fluid", "")),
-            ("Size", values.get("Size", "")),
-            ("Specification",
-             segment.get("Specification", "")),
-        ]
-        generic_group = etree.SubElement(
-            instance, "GenericAttributes",
-            Set=class_name,
-            Number=str(len(attributes)),
-        )
-        for name, value in attributes:
-            options = {
-                "Name": name,
-                "Format": "string",
-                "Value": value,
-            }
-            if name == "Size" and value:
-                options["Units"] = "mm"
-            etree.SubElement(
-                generic_group, "GenericAttribute", **options
-            )
+        comp_values = {
+            "Fluid": values.get("Fluid", ""),
+            "Size": values.get("Size", ""),
+            "Specification": segment.get("Specification", ""),
+        }
 
-        dexpi = etree.SubElement(
-            instance, "GenericAttributes",
-            Set="DexpiAttributes", Number="2",
-        )
-        for name, value in (
-            ("PipingClassCodeAssignmentClass",
-             segment.get("Specification", "")),
-            ("FluidCodeAssignmentClass",
-             values.get("Fluid", "")),
-        ):
-            etree.SubElement(
-                dexpi, "GenericAttribute",
-                Name=name, Format="string",
-                Value=value,
-                AttributeURI=(
-                    "http://sandbox.dexpi.org/rdl/" + name
-                ),
-            )
+        write_attributes(instance, "PipingComponent", class_name,
+                         comp_values, attr_defs)
+
+
 
         # The existing segment ends in NominalDiameter.
         diameter = segment.find("NominalDiameter")
