@@ -1308,15 +1308,18 @@ class App(tk.Tk):
         def highlight(event=None):
             selected = set(listing.curselection())
             for index, ids in canvas_items.items():
+                handle = candidates[index]["handle"]
+                if index in selected:
+                    color, width = "red", 3
+                elif handle in used:
+                    color, width = "#00aa00", 2
+                else:
+                    color, width = "#777777", 1
                 for canvas_id in ids:
-                    canvas.itemconfigure(
-                        canvas_id,
-                        fill="red" if index in selected
-                        else "#777777",
-                        width=3 if index in selected else 1,
-                    )
+                    canvas.itemconfigure(canvas_id, fill=color, width=width)
                     if index in selected:
                         canvas.tag_raise(canvas_id)
+
 
         def draw(event=None):
             width = max(canvas.winfo_width(), 100)
@@ -1360,6 +1363,7 @@ class App(tk.Tk):
                 and box[1] - 8 <= event.y <= box[3] + 8
             ):
                 return
+            
 
             for index, ids in canvas_items.items():
                 if canvas_id not in ids:
@@ -1484,13 +1488,23 @@ class App(tk.Tk):
                 )
                 return
 
+            used.update(item["handle"] for item in chosen)
+            listing.delete(0, "end")
+            for item in candidates:
+                marker = " [SAVED]" if item["handle"] in used else ""
+                listing.insert(
+                    "end",
+                    f'{item["handle"]:>6}  {item["block"]}{marker}',
+                )
+            listing.selection_clear(0, "end")
+            highlight()
             messagebox.showinfo(
                 "Assignments saved",
                 f"Saved {len(additions)} nozzle(s) under "
                 f"{owner_tag}.\n{review_file}",
                 parent=window,
             )
-            window.destroy()
+
 
         ttk.Button(
             form, text="Approve selected nozzle blocks",

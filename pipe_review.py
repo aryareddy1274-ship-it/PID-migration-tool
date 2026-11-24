@@ -229,9 +229,11 @@ def open_pipe_review(app):
             return
         canvas_id = nearest[0]
         box = canvas.bbox(canvas_id)
+        cx = canvas.canvasx(event.x)
+        cy = canvas.canvasy(event.y)
         if not box or not (
-            box[0] - 7 <= event.x <= box[2] + 7
-            and box[1] - 7 <= event.y <= box[3] + 7
+            box[0] - 7 <= cx <= box[2] + 7
+            and box[1] - 7 <= cy <= box[3] + 7
         ):
             return
         index = next(
@@ -734,7 +736,9 @@ def review_pipe_components(app, parent):
 
     body = ttk.Frame(dialog, padding=8)
     body.pack(fill="both", expand=True)
+    body.columnconfigure(0, weight=1)
     body.columnconfigure(1, weight=1)
+    body. columnconfigure(2,weight=3)
     body.rowconfigure(0, weight=1)
 
     listing = tk.Listbox(
@@ -745,8 +749,28 @@ def review_pipe_components(app, parent):
     listing.grid(
         row=0, column=0, sticky="nsew", padx=(0, 8)
     )
+    pipe_listing = tk.Listbox(
+        body, selectmode="browse",
+        exportselection=False, width=33,
+        font=("Consolas", 10),
+    )
+    pipe_listing.grid(row=0, column=1, sticky="nsew", padx=(0, 8))
+
+    for label_key in sorted(pipe_choices):
+        pipe_listing.insert("end", label_key)
+
+    def on_pipe_listing_select(event=None):
+        selected = pipe_listing.curselection()
+        if not selected:
+            return
+        label_key = pipe_listing.get(selected[0])
+        pipe_choice.set(label_key)
+        highlight_owner_line()
+
+    pipe_listing.bind("<<ListboxSelect>>", on_pipe_listing_select)
+
     canvas = tk.Canvas(body, bg="white")
-    canvas.grid(row=0, column=1, sticky="nsew")
+    canvas.grid(row=0, column=2, sticky="nsew")
 
     for item in candidates:
         listing.insert(
@@ -765,19 +789,32 @@ def review_pipe_components(app, parent):
     max_y = max(y for x, y in all_points)
     canvas_items = {}
     pipe_canvas_items = {}
+    approved_component_handles = set()
+    pipe_components_file = folder / "pipe_components_REVIEW.csv"
+    if pipe_components_file.exists():
+        with pipe_components_file.open(newline="", encoding="utf-8-sig") as file:
+            for row in csv.DictReader(file):
+                if row.get("review_status", "").upper() == "APPROVED":
+                    for h in row["geometry_handles"].split("|"):
+                        approved_component_handles.add(h.strip().upper())
+
 
     def highlight(event=None):
         selected = set(listing.curselection())
         for index, ids in canvas_items.items():
+            handle = candidates[index]["handle"]
             for canvas_id in ids:
-                canvas.itemconfigure(
-                    canvas_id,
-                    fill="red" if index in selected
-                    else "#888888",
-                    width=3 if index in selected else 1,
-                )
                 if index in selected:
+                    color, width = "red", 3
+                elif handle in approved_component_handles:
+                    color, width = "#00aa00", 2
+                else:
+                    color, width = "#888888", 1
+                canvas.itemconfigure(canvas_id, fill=color, width=width)
+            if index in selected:
+                for canvas_id in ids:
                     canvas.tag_raise(canvas_id)
+
 
     def draw(event=None):
         width = max(canvas.winfo_width(), 100)
@@ -840,8 +877,7 @@ def review_pipe_components(app, parent):
                     fill="#0066cc" if active else "#c8c8c8",
                     width=4 if active else 2,
                 )
-                if active:
-                    canvas.tag_raise(canvas_id)
+                canvas.tag_lower(canvas_id)
     pipe_picker.bind(
         "<<ComboboxSelected>>", highlight_owner_line
     )
@@ -853,10 +889,13 @@ def review_pipe_components(app, parent):
             return
         canvas_id = nearest[0]
         box = canvas.bbox(canvas_id)
+        cx = canvas.canvasx(event.x)
+        cy = canvas.canvasy(event.y)
         if box is None or not (
-            box[0] - 8 <= event.x <= box[2] + 8
-            and box[1] - 8 <= event.y <= box[3] + 8
+            box[0] - 8 <= cx <= box[2] + 8
+            and box[1] - 8 <= cy <= box[3] + 8
         ):
+
             return
 
         for index, ids in canvas_items.items():
@@ -1024,7 +1063,10 @@ def review_pipe_components(app, parent):
             f"line handle {line_handle}.\n{output}",
             parent=dialog,
         )
-        dialog.destroy()
+        approved_component_handles.update(selected_handles)
+        listing.selection_clear(0, "end")
+        highlight()
+
 
     ttk.Button(
         form, text="Approve selected component geometry",
